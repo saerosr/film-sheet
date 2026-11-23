@@ -37,6 +37,7 @@ python filmsheet.py my_video.mp4 -o sheet.png --preset 15promax --rows 5   # CLI
 | `--interval` | 프레임 간격(초). 생략하면 영상 길이 ÷ 장수로 자동 계산 |
 | `--seed` | 배치·먼지 모양을 바꾸는 시드 |
 | `--positive` | 네거티브 반전 끄기 |
+| `--no-film` | 필름 색감(빛바랜 톤·그레인·할레이션) 끄기 — 기본은 켜짐 |
 | `--color` | 흑백 대신 컬러 |
 
 ## 커스터마이징

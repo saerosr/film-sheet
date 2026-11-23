@@ -42,6 +42,7 @@ PAGE = """<!doctype html>
  <div class="row">
   <label class="row"><input type="checkbox" name="invert" checked> 네거티브(반전)</label>
   <label class="row"><input type="checkbox" name="gray" checked> 흑백</label>
+  <label class="row"><input type="checkbox" name="film" checked> 필름 색감</label>
  </div>
  <button name="b">시트 만들기</button>
 </form>
@@ -76,6 +77,7 @@ def index():
                     grayscale=bool(request.form.get("gray")),
                     seed=int(request.form.get("seed", 7)),
                     interval=float(iv) if iv else None,
+                    film=bool(request.form.get("film")),
                 )
                 result = f"{uuid.uuid4().hex}.png"
                 img.save(os.path.join(OUT_DIR, result))

@@ -35,10 +35,11 @@ PRESETS = {
 
 BG = (255, 255, 255)  # 바깥 흰 배경
 BASE = (200, 200, 199)  # 필름 베이스 회색 (네거티브)
-BASE_DARK = (30, 30, 30)  # 필름 베이스 (반전 끄면 어두운 테두리)
+BASE_DARK = (66, 61, 59)  # 필름 베이스 (반전 끄면: 갈색 빛 도는 짙은 베이스)
 HOLE = (236, 236, 235)  # 스프로킷 구멍
 TEXT = (55, 55, 55)
-TEXT_DARK = (225, 225, 225)
+EDGE_TEXT_DARK = (232, 226, 218)  # 어두운 베이스 위 글자색
+PERF_SCALE = 1.12  # 실제 35mm 퍼포레이션(2.8x1.98mm) 대비 배율
 
 # 가로폭(W) 대비 비율 — 샘플 시트 비율을 따름
 FRAME_W = 0.232
@@ -59,8 +60,16 @@ _FONT_CANDIDATES = [
 ]
 
 
-def _font(size: int) -> ImageFont.ImageFont:
-    for p in _FONT_CANDIDATES:
+_BOLD_FONT_CANDIDATES = [
+    "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+    "C:/Windows/Fonts/arialbd.ttf",
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    "/usr/share/fonts/opentype/inter/InterDisplay-Bold.otf",
+]
+
+
+def _font(size: int, bold: bool = False) -> ImageFont.ImageFont:
+    for p in (_BOLD_FONT_CANDIDATES if bold else []) + _FONT_CANDIDATES:
         if os.path.exists(p):
             try:
                 return ImageFont.truetype(p, size)
@@ -163,8 +172,32 @@ def extract_frames(video_path: str, n: int, interval: float | None = None):
     return frames[:n], info
 
 
+def _film_grade(img: np.ndarray, grayscale: bool) -> np.ndarray:
+    """필름 색감: 채도 낮춤 + 부드러운 S커브 + 그림자 청록/하이라이트 따뜻함 + 할레이션 + 블랙 들뜸. (BGR float)"""
+    lum = img.mean(axis=2, keepdims=True)
+    if not grayscale:
+        img = lum + (img - lum) * 0.85
+    t = np.clip(img, 0, 255) / 255
+    img = (t + 0.2 * (t * t * (3 - 2 * t) - t)) * 255
+    if not grayscale:
+        w = np.clip(lum / 255, 0, 1)
+        sw, hw = (1 - w) ** 2, w ** 2
+        img[..., 2:3] += -4 * sw + 6 * hw  # R
+        img[..., 1:2] += 5 * sw + 2 * hw   # G
+        img[..., 0:1] += 4 * sw - 6 * hw   # B
+    bright = np.clip(lum[..., 0] - 185, 0, None)
+    halo = (cv2.GaussianBlur(bright, (0, 0), max(1.0, img.shape[1] / 150)) / 70.0)[..., None]
+    if grayscale:
+        img = img + halo * 40
+    else:
+        img[..., 2:3] += halo[..., :] * 60
+        img[..., 1:2] += halo[..., :] * 30
+        img[..., 0:1] += halo[..., :] * 8
+    return 18 + np.clip(img, 0, 255) * (232 - 18) / 255
+
+
 def make_frame_image(bgr: np.ndarray, fw: int, fh: int, invert: bool, grayscale: bool,
-                     rng: np.random.Generator, py: random.Random) -> Image.Image:
+                     rng: np.random.Generator, py: random.Random, film: bool = False) -> Image.Image:
     """영상 프레임 하나를 필름 한 컷 느낌(3:2, 네거티브, 그레인, 먼지)으로 가공."""
     h, w = bgr.shape[:2]
     target = fw / fh
@@ -182,18 +215,21 @@ def make_frame_image(bgr: np.ndarray, fw: int, fh: int, invert: bool, grayscale:
     img = img.astype(np.float32)
     # 대비 늘리기 + 살짝 소프트하게
     lo, hi = np.percentile(img, (1, 99))
-    img = np.clip((img - lo) / max(hi - lo, 1) * 255, 0, 255)
+    stretched = np.clip((img - lo) / max(hi - lo, 1) * 255, 0, 255)
+    img = 0.55 * img + 0.45 * stretched if film else stretched  # 포지티브는 대비를 덜 늘림
     img = cv2.GaussianBlur(img, (0, 0), max(0.6, fw / 600))
     img = np.clip(img, 0, 255)
+    if film:
+        img = _film_grade(img, grayscale)
     if invert:
         img = 255 - img
-    # 하이키 느낌(밝게) + 그레인
-    img = 255 * (img / 255) ** 0.8
-    img += rng.normal(0, 5.5, img.shape[:2])[..., None]
+    # 네거티브: 하이키(밝게) / 포지티브: 자연스러운 톤 + 그레인
+    img = 255 * (np.clip(img, 0, 255) / 255) ** (0.9 if film else 0.8)
+    img += rng.normal(0, 7.0 if film else 5.5, img.shape[:2])[..., None]
     # 비네팅
     yy, xx = np.mgrid[0:fh, 0:fw]
     d = np.sqrt(((xx - fw / 2) / (fw / 2)) ** 2 + ((yy - fh / 2) / (fh / 2)) ** 2)
-    img *= (1 - 0.12 * np.clip(d - 0.4, 0, 1))[..., None]
+    img *= (1 - (0.18 if film else 0.12) * np.clip(d - 0.4, 0, 1))[..., None]
     out = Image.fromarray(np.clip(img, 0, 255).astype(np.uint8)[..., ::-1])  # BGR->RGB
     # 먼지/스크래치
     dr = ImageDraw.Draw(out)
@@ -212,51 +248,64 @@ def make_frame_image(bgr: np.ndarray, fw: int, fh: int, invert: bool, grayscale:
 
 def build_strip(frames: list[Image.Image], plan: RowPlan, W: int, start_number: int,
                 py: random.Random, dark: bool = False) -> Image.Image:
-    """스트립 한 줄(RGBA)을 그린다. 좌표는 스트립 레이어 기준."""
+    """스트립 한 줄(RGBA). 35mm 규격(필름 폭 35mm, 퍼포 2.8x1.98mm, 피치 4.75mm)을 기준으로 그린다."""
     pitch = PITCH * W
     fw, fh = frames[0].size
     sh = int(STRIP_H * W)
     sw = int(plan.x1 - plan.x0)
+    mm = STRIP_H * W / 35.0  # 1mm 의 픽셀 크기
+
     base = BASE_DARK if dark else BASE
-    text_color = TEXT_DARK if dark else TEXT
     strip = Image.new("RGBA", (sw, sh), base + (255,))
-    # 베이스에 은은한 노이즈 / 세로 그라데이션
     arr = np.asarray(strip).astype(np.float32)
     arr[..., :3] += np.random.default_rng(py.randint(0, 10**6)).normal(0, 2.0, (sh, sw, 1))
-    grad = np.linspace(-6, 6, sh)[:, None, None]
-    arr[..., :3] += grad
+    arr[..., :3] += np.linspace(-8 if dark else -6, 6, sh)[:, None, None]
     strip = Image.fromarray(np.clip(arr, 0, 255).astype(np.uint8), "RGBA")
-    dr = ImageDraw.Draw(strip)
 
-    # 스프로킷 구멍
-    hole_w, hole_h = int(0.0165 * W), int(0.0115 * W)
-    hole_pitch = 0.0218 * W
-    band = (sh - fh) / 2  # 프레임 위/아래 띠 높이
-    ys = [band * 0.28, sh - band * 0.28 - hole_h]
+    # 스프로킷 구멍: 프레임 한 칸(피치)당 8개, 실제 비율의 둥근 직사각형
+    hw, hh = 2.8 * mm * PERF_SCALE, 1.98 * mm * PERF_SCALE
+    hp = pitch / 8.0
+    fx0 = plan.first_frame_x - plan.x0
+    hole_col = (255, 255, 255) if dark else HOLE
     holes = Image.new("RGBA", (sw, sh), (0, 0, 0, 0))
     hd = ImageDraw.Draw(holes)
-    x = hole_pitch * 0.5
-    while x < sw:
-        for y in ys:
-            hd.rounded_rectangle([x, y, x + hole_w, y + hole_h], radius=hole_h * 0.38, fill=HOLE + (255,))
-        x += hole_pitch
-    holes = holes.filter(ImageFilter.GaussianBlur(max(1, W / 1300)))
+    k = int(math.floor(-fx0 / hp)) - 1
+    while True:
+        cx = fx0 + (k + 0.5) * hp
+        if cx - hw / 2 > sw:
+            break
+        if cx + hw / 2 >= 0:
+            for cy in (3.0 * mm, sh - 3.0 * mm):
+                hd.rounded_rectangle([cx - hw / 2, cy - hh / 2, cx + hw / 2, cy + hh / 2],
+                                     radius=hh * 0.28, fill=hole_col + (255,))
+        k += 1
+    holes = holes.filter(ImageFilter.GaussianBlur(max(0.7, W / 2000)))
     strip.alpha_composite(holes)
     dr = ImageDraw.Draw(strip)
 
-    # 프레임 + 번호
-    font = _font(max(10, int(0.0098 * W)))
-    top_y = int(band)
+    # 프레임 + 글자
+    fs = max(9, int(0.009 * W))
+    font = _font(fs, bold=dark)
+    top_y = int((sh - fh) / 2)
+    hole_top_edge = 3.0 * mm - hh / 2  # 가장자리 ~ 구멍 위쪽 (여백)
+    hole_bottom_edge = 3.0 * mm + hh / 2
     for i, fimg in enumerate(frames):
-        fx = int(plan.first_frame_x - plan.x0 + i * pitch)
-        # 프레임 바깥으로 삐져나가는 부분은 paste가 자동으로 잘라줌
-        strip.paste(fimg.convert("RGBA"), (fx, top_y))
+        fx = int(fx0 + i * pitch)
+        strip.paste(fimg.convert("RGBA"), (fx, top_y))  # 프레임 밖으로 나가는 부분은 자동으로 잘림
         num = start_number + i
-        ty = int(top_y - 0.0125 * W)
-        dr.text((fx + 0.008 * W, ty), str(num), fill=text_color, font=font)
-        dr.text((fx + 0.133 * W, ty), f"{num}A", fill=text_color, font=font)
-        if i % 4 == 0:
-            dr.text((fx + 0.05 * W, top_y + fh + 0.002 * W), "SAFETY FILM", fill=text_color, font=font)
+        if dark:  # 포지티브: 위 모서리에 검정 인쇄, 아래 모서리 가운데에 주황 번호
+            dr.text((fx + 0.01 * W, (hole_top_edge - fs) / 2), "SAFETY FILM", fill=EDGE_TEXT_DARK, font=font)
+            s_num = str(num)
+            tw = dr.textlength(s_num, font=font)
+            dr.text((fx + fw / 2 - tw / 2, sh - hole_top_edge + (hole_top_edge - fs) / 2),
+                    s_num, fill=EDGE_TEXT_DARK, font=font)
+        else:  # 네거티브: 프레임 위에 번호, 아래에 SAFETY FILM
+            ty = hole_bottom_edge + (top_y - hole_bottom_edge - fs) / 2
+            dr.text((fx + 0.008 * W, ty), str(num), fill=TEXT, font=font)
+            dr.text((fx + 0.133 * W, ty), f"{num}A", fill=TEXT, font=font)
+            if i % 4 == 0:
+                by = top_y + fh + ((sh - hole_top_edge - hh) - (top_y + fh) - fs) / 2
+                dr.text((fx + 0.05 * W, by), "SAFETY FILM", fill=TEXT, font=font)
     return strip
 
 
@@ -265,8 +314,8 @@ def shadowed(strip: Image.Image, W: int, dark: bool = False) -> Image.Image:
     w, h = strip.size
     out = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
     mask = Image.new("L", out.size, 0)
-    ImageDraw.Draw(mask).rectangle([pad, pad + int(0.004 * W), pad + w, pad + h + int(0.004 * W)], fill=95)
-    mask = mask.filter(ImageFilter.GaussianBlur(W / 220))
+    ImageDraw.Draw(mask).rectangle([pad, pad + int(0.003 * W), pad + w, pad + h + int(0.003 * W)], fill=40)
+    mask = mask.filter(ImageFilter.GaussianBlur(W / 170))
     shadow = Image.new("RGBA", out.size, (0, 0, 0, 255))
     shadow.putalpha(mask)
     out.alpha_composite(shadow)
@@ -277,7 +326,7 @@ def shadowed(strip: Image.Image, W: int, dark: bool = False) -> Image.Image:
 
 
 def render_sheet(video_path: str, size=(1290, 2796), rows: int = 5, invert: bool = True,
-                 grayscale: bool = True, seed: int = 7, interval: float | None = None):
+                 grayscale: bool = True, seed: int = 7, interval: float | None = None, film: bool = True):
     W, H = size
     py = random.Random(seed)
     nrng = np.random.default_rng(seed)
@@ -299,7 +348,7 @@ def render_sheet(video_path: str, size=(1290, 2796), rows: int = 5, invert: bool
     y = margin + max(0.0, min(0.05 * H, margin - 0.02 * H))  # 살짝 아래로 내림(화면 밖으로는 안 나가게)
     n = 0
     for plan in plans:
-        imgs = [make_frame_image(raw[n + i], fw, fh, invert, grayscale, nrng, py)
+        imgs = [make_frame_image(raw[n + i], fw, fh, invert, grayscale, nrng, py, film=film)
                 for i in range(plan.n_frames)]
         strip = build_strip(imgs, plan, W, n + 1, py, dark=not invert)
         layer = shadowed(strip, W, dark=not invert).rotate(plan.angle, resample=Image.BICUBIC, expand=True)
@@ -331,10 +380,11 @@ def main() -> None:
     ap.add_argument("--rows", type=int, default=5)
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--interval", type=float, default=None, help="프레임 간격(초). 생략하면 영상 길이/장수로 자동 계산")
+    ap.add_argument("--no-film", action="store_true", help="필름 색감(빛바랜 톤·그레인·할레이션) 끄기")
     ap.add_argument("--positive", action="store_true", help="네거티브 반전 끄기")
     ap.add_argument("--color", action="store_true", help="흑백 대신 컬러")
     a = ap.parse_args()
-    img, info = render_sheet(a.video, PRESETS[a.preset], a.rows, not a.positive, not a.color, a.seed, a.interval)
+    img, info = render_sheet(a.video, PRESETS[a.preset], a.rows, not a.positive, not a.color, a.seed, a.interval, not a.no_film)
     img.save(a.output)
     print(f"saved {a.output} {img.size}")
     print(f"영상 {info['duration']:.1f}초 / {info['frames']}장 / 간격 {info['interval']:.2f}초 {info['note']}")

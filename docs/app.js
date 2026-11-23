@@ -18,7 +18,8 @@ const PRESETS = [
 
 const BG = '#ffffff';
 const BASE = [200, 200, 199];
-const BASE_DARK = [30, 30, 30]; // 반전을 끄면 어두운 필름 테두리
+const BASE_DARK = [66, 61, 59]; // 반전을 끄면: 갈색 빛 도는 짙은 필름 베이스
+const PERF_SCALE = 1.12; // 실제 35mm 퍼포레이션(2.8×1.98mm) 대비 배율
 const HOLE = 'rgb(236,236,235)';
 const TEXT = 'rgb(55,55,55)';
 const FRAME_W = 0.232, FRAME_H = FRAME_W * 2 / 3;
@@ -145,7 +146,7 @@ function boxBlur(src, w, h) {
   return out;
 }
 
-function makeFrameImage(video, fw, fh, invert, gray, rng) {
+function makeFrameImage(video, fw, fh, invert, gray, rng, film) {
   const vw = video.videoWidth, vh = video.videoHeight, target = fw / fh;
   let sx = 0, sy = 0, sw = vw, sh = vh;
   if (vw / vh > target) { sw = vh * target; sx = (vw - sw) / 2; }
@@ -172,23 +173,53 @@ function makeFrameImage(video, fw, fh, invert, gray, rng) {
   for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= total * 0.99) { hi = v; break; } }
   const span = Math.max(hi - lo, 1);
   planes = planes.map((p) => {
-    for (let i = 0; i < n; i++) p[i] = Math.min(255, Math.max(0, (p[i] - lo) / span * 255));
+    for (let i = 0; i < n; i++) {
+      const st = Math.min(255, Math.max(0, (p[i] - lo) / span * 255));
+      p[i] = film ? 0.55 * p[i] + 0.45 * st : st; // 포지티브는 대비를 덜 늘림
+    }
     return boxBlur(p, fw, fh);
   });
-  // 반전, 하이키 감마, 그레인, 비네팅
+  // 필름 색감(옵션)용 할레이션: 밝은 영역을 번지게 한 평면
+  let halo = null;
+  if (film) {
+    halo = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      const l = gray ? planes[0][i] : (planes[0][i] + planes[1][i] + planes[2][i]) / 3;
+      halo[i] = Math.max(0, l - 185);
+    }
+    for (let k = 0; k < 6; k++) halo = boxBlur(halo, fw, fh);
+  }
+  const vigK = film ? 0.18 : 0.12;
   const vig = new Float32Array(n);
   for (let y = 0; y < fh; y++) for (let x = 0; x < fw; x++) {
     const dd = Math.hypot((x - fw / 2) / (fw / 2), (y - fh / 2) / (fh / 2));
-    vig[y * fw + x] = 1 - 0.12 * Math.min(1, Math.max(0, dd - 0.4));
+    vig[y * fw + x] = 1 - vigK * Math.min(1, Math.max(0, dd - 0.4));
   }
+  const cl = (v) => Math.min(255, Math.max(0, v));
+  const curve = (v) => { const t = cl(v) / 255; return 255 * (t + 0.2 * (t * t * (3 - 2 * t) - t)); };
+  const finish = (v, noise, vg) => {
+    if (invert) v = 255 - cl(v);
+    v = 255 * Math.pow(cl(v) / 255, film ? 0.9 : 0.8) + noise;
+    return cl(v * vg);
+  };
   for (let i = 0; i < n; i++) {
-    const noise = gauss(rng) * 5.5;
-    for (let ch = 0; ch < 3; ch++) {
-      let v = planes[gray ? 0 : ch][i];
-      if (invert) v = 255 - v;
-      v = 255 * Math.pow(Math.min(255, Math.max(0, v)) / 255, 0.8) + noise;
-      d[i * 4 + ch] = Math.min(255, Math.max(0, v * vig[i]));
+    const noise = gauss(rng) * (film ? 7.0 : 5.5);
+    let r = cl(planes[0][i]), g = gray ? r : cl(planes[1][i]), b = gray ? r : cl(planes[2][i]);
+    if (film) { // 채도↓, 부드러운 S커브, 그림자 청록/하이라이트 따뜻함, 할레이션, 블랙 들뜸
+      const lum = (r + g + b) / 3;
+      if (!gray) { r = lum + (r - lum) * 0.85; g = lum + (g - lum) * 0.85; b = lum + (b - lum) * 0.85; }
+      r = curve(r); g = curve(g); b = curve(b);
+      if (!gray) {
+        const w = lum / 255, sw = (1 - w) * (1 - w), hw = w * w;
+        r += -4 * sw + 6 * hw; g += 5 * sw + 2 * hw; b += 4 * sw - 6 * hw;
+      }
+      const h = halo[i] / 70;
+      if (gray) { r += h * 40; g += h * 40; b += h * 40; } else { r += h * 60; g += h * 30; b += h * 8; }
+      r = 18 + cl(r) * 214 / 255; g = 18 + cl(g) * 214 / 255; b = 18 + cl(b) * 214 / 255;
     }
+    d[i * 4] = finish(r, noise, vig[i]);
+    d[i * 4 + 1] = finish(g, noise, vig[i]);
+    d[i * 4 + 2] = finish(b, noise, vig[i]);
     d[i * 4 + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);
@@ -211,16 +242,19 @@ function makeFrameImage(video, fw, fh, invert, gray, rng) {
 }
 
 // ---------- 스트립 ----------
+// 35mm 규격(필름 폭 35mm, 퍼포 2.8×1.98mm, 피치 4.75mm)을 기준으로 그린다.
 function buildStrip(frames, plan, W, startNumber, rng, dark) {
   const pitch = PITCH * W;
   const fw = frames[0].width, fh = frames[0].height;
   const sh = Math.round(STRIP_H * W), sw = Math.round(plan.x1 - plan.x0);
+  const mm = STRIP_H * W / 35; // 1mm 의 픽셀 크기
   const strip = mkCanvas(sw, sh), ctx = strip.getContext('2d');
   const baseColor = dark ? BASE_DARK : BASE;
 
   const base = ctx.createImageData(sw, sh), bd = base.data;
+  const g0 = dark ? -8 : -6;
   for (let y = 0; y < sh; y++) {
-    const g = -6 + 12 * (y / Math.max(1, sh - 1));
+    const g = g0 + (6 - g0) * (y / Math.max(1, sh - 1));
     for (let x = 0; x < sw; x++) {
       const o = (y * sw + x) * 4, nz = gauss(rng) * 2;
       bd[o] = baseColor[0] + g + nz; bd[o + 1] = baseColor[1] + g + nz; bd[o + 2] = baseColor[2] + g + nz; bd[o + 3] = 255;
@@ -228,33 +262,55 @@ function buildStrip(frames, plan, W, startNumber, rng, dark) {
   }
   ctx.putImageData(base, 0, 0);
 
-  // 스프로킷 구멍
-  const holeW = 0.0165 * W, holeH = 0.0115 * W, holePitch = 0.0218 * W;
-  const band = (sh - fh) / 2, topY = Math.floor(band);
-  const ys = [band * 0.28, sh - band * 0.28 - holeH];
-  ctx.fillStyle = HOLE; ctx.shadowColor = HOLE; ctx.shadowBlur = Math.max(1, W / 650);
-  for (let x = holePitch * 0.5; x < sw; x += holePitch) {
-    for (const y of ys) { roundRect(ctx, x, y, holeW, holeH, holeH * 0.38); ctx.fill(); }
+  // 스프로킷 구멍: 프레임 한 칸(피치)당 8개, 실제 비율의 둥근 직사각형
+  const hw = 2.8 * mm * PERF_SCALE, hh = 1.98 * mm * PERF_SCALE, hp = pitch / 8;
+  const fx0 = plan.firstFrameX - plan.x0;
+  const holeCol = dark ? '#ffffff' : HOLE;
+  ctx.fillStyle = holeCol; ctx.shadowColor = holeCol; ctx.shadowBlur = Math.max(0.7, W / 2000);
+  for (let k = Math.floor(-fx0 / hp) - 1; ; k++) {
+    const cx = fx0 + (k + 0.5) * hp;
+    if (cx - hw / 2 > sw) break;
+    if (cx + hw / 2 < 0) continue;
+    for (const cy of [3.0 * mm, sh - 3.0 * mm]) {
+      roundRect(ctx, cx - hw / 2, cy - hh / 2, hw, hh, hh * 0.28); ctx.fill();
+    }
   }
   ctx.shadowBlur = 0; ctx.shadowColor = 'transparent';
 
-  // 프레임 + 번호
-  ctx.font = `${Math.max(10, Math.floor(0.0098 * W))}px Helvetica, Arial, sans-serif`;
-  ctx.textBaseline = 'top'; ctx.fillStyle = dark ? 'rgb(225,225,225)' : TEXT;
+  // 프레임 + 글자
+  const fs = Math.max(9, Math.floor(0.009 * W));
+  ctx.font = `${dark ? 'bold ' : ''}${fs}px Helvetica, Arial, sans-serif`;
+  ctx.textBaseline = 'top';
+  const topY = Math.floor((sh - fh) / 2);
+  const holeTopEdge = 3.0 * mm - hh / 2; // 가장자리 ~ 구멍 위쪽 (여백)
+  const holeBottomEdge = 3.0 * mm + hh / 2;
   frames.forEach((f, i) => {
-    const fx = Math.floor(plan.firstFrameX - plan.x0 + i * pitch);
+    const fx = Math.floor(fx0 + i * pitch);
     ctx.drawImage(f, fx, topY);
-    const num = startNumber + i, ty = topY - 0.0125 * W;
-    ctx.fillText(String(num), fx + 0.008 * W, ty);
-    ctx.fillText(`${num}A`, fx + 0.133 * W, ty);
-    if (i % 4 === 0) ctx.fillText('SAFETY FILM', fx + 0.05 * W, topY + fh + 0.002 * W);
+    const num = startNumber + i;
+    if (dark) { // 포지티브: 위 모서리에 검정 인쇄, 아래 모서리 가운데에 주황 번호
+      ctx.textAlign = 'left'; ctx.fillStyle = 'rgb(232,226,218)';
+      ctx.fillText('SAFETY FILM', fx + 0.01 * W, (holeTopEdge - fs) / 2);
+      ctx.textAlign = 'center'; ctx.fillStyle = 'rgb(232,226,218)';
+      ctx.fillText(String(num), fx + fw / 2, sh - holeTopEdge + (holeTopEdge - fs) / 2);
+      ctx.textAlign = 'left';
+    } else { // 네거티브: 프레임 위에 번호, 아래에 SAFETY FILM
+      ctx.fillStyle = TEXT;
+      const ty = holeBottomEdge + (topY - holeBottomEdge - fs) / 2;
+      ctx.fillText(String(num), fx + 0.008 * W, ty);
+      ctx.fillText(`${num}A`, fx + 0.133 * W, ty);
+      if (i % 4 === 0) {
+        const by = topY + fh + ((sh - holeTopEdge - hh) - (topY + fh) - fs) / 2;
+        ctx.fillText('SAFETY FILM', fx + 0.05 * W, by);
+      }
+    }
   });
   return strip;
 }
 
 // ---------- 전체 ----------
 async function renderSheet(video, opt, onProgress) {
-  const { W, H, rows, invert, gray, seed, interval } = opt;
+  const { W, H, rows, invert, gray, seed, interval, film } = opt;
   const rng = mulberry32(seed);
   const plans = planRows(W, rows, rng);
 
@@ -277,7 +333,7 @@ async function renderSheet(video, opt, onProgress) {
     const imgs = [];
     for (let i = 0; i < plan.n; i++) {
       await seek(video, Math.min(Math.max(times[n + i], 0), video.duration - 0.05));
-      imgs.push(makeFrameImage(video, fw, fh, invert, gray, rng));
+      imgs.push(makeFrameImage(video, fw, fh, invert, gray, rng, film));
       onProgress && onProgress((n + i + 1) / totalFrames);
       await tick();
     }
@@ -286,7 +342,7 @@ async function renderSheet(video, opt, onProgress) {
     ctx.save();
     ctx.translate(cx, cy);
     ctx.rotate(plan.angle * Math.PI / 180);
-    ctx.shadowColor = 'rgba(0,0,0,0.37)'; ctx.shadowBlur = W / 110; ctx.shadowOffsetY = 0.004 * W;
+    ctx.shadowColor = 'rgba(0,0,0,0.16)'; ctx.shadowBlur = W / 85; ctx.shadowOffsetY = 0.003 * W;
     ctx.drawImage(strip, -strip.width / 2, -strip.height / 2);
     ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
     ctx.strokeStyle = invert ? 'rgb(222,222,221)' : 'rgb(70,70,70)'; ctx.lineWidth = 1;
@@ -326,7 +382,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const { canvas, info } = await renderSheet(video, {
         W: w, H: h,
         rows: Math.max(1, Math.min(6, parseInt($('rows').value, 10) || 5)),
-        invert: $('invert').checked, gray: $('gray').checked,
+        invert: $('invert').checked, gray: $('gray').checked, film: $('film').checked,
         seed: parseInt($('seed').value, 10) || 7,
         interval: isFinite(iv) ? iv : null,
       }, (p) => { status.textContent = `만드는 중… ${Math.round(p * 100)}%`; });
