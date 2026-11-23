@@ -189,6 +189,11 @@ function makeFrameImage(video, fw, fh, invert, gray, rng, film) {
     }
     for (let k = 0; k < 6; k++) halo = boxBlur(halo, fw, fh);
   }
+  // 반투명한 유제 느낌: 약한 확산(소프트 글로우)용 흐린 평면
+  let soft = null;
+  if (film) soft = planes.map((pl) => { let q = pl; for (let k = 0; k < 12; k++) q = boxBlur(q, fw, fh); return q; });
+  const FLO = gray ? [26, 26, 26] : [24, 28, 27]; // 블랙: 청록빛 안개
+  const FHI = gray ? [233, 233, 233] : [242, 234, 222]; // 화이트: 크림색
   const vigK = film ? 0.18 : 0.12;
   const vig = new Float32Array(n);
   for (let y = 0; y < fh; y++) for (let x = 0; x < fw; x++) {
@@ -206,20 +211,23 @@ function makeFrameImage(video, fw, fh, invert, gray, rng, film) {
     const noise = gauss(rng) * (film ? 7.0 : 5.5);
     let r = cl(planes[0][i]), g = gray ? r : cl(planes[1][i]), b = gray ? r : cl(planes[2][i]);
     if (film) { // 채도↓, 부드러운 S커브, 그림자 청록/하이라이트 따뜻함, 할레이션, 블랙 들뜸
+      r = 0.82 * r + 0.18 * soft[0][i];
+      if (gray) { g = r; b = r; } else { g = 0.82 * g + 0.18 * soft[1][i]; b = 0.82 * b + 0.18 * soft[2][i]; }
       const lum = (r + g + b) / 3;
       if (!gray) { r = lum + (r - lum) * 0.85; g = lum + (g - lum) * 0.85; b = lum + (b - lum) * 0.85; }
       r = curve(r); g = curve(g); b = curve(b);
       if (!gray) {
         const w = lum / 255, sw = (1 - w) * (1 - w), hw = w * w;
-        r += -4 * sw + 6 * hw; g += 5 * sw + 2 * hw; b += 4 * sw - 6 * hw;
+        r += -6 * sw + 8 * hw; g += 6 * sw + 3 * hw; b += 6 * sw - 8 * hw;
       }
       const h = halo[i] / 70;
       if (gray) { r += h * 40; g += h * 40; b += h * 40; } else { r += h * 60; g += h * 30; b += h * 8; }
-      r = 18 + cl(r) * 214 / 255; g = 18 + cl(g) * 214 / 255; b = 18 + cl(b) * 214 / 255;
+      r = FLO[0] + cl(r) / 255 * (FHI[0] - FLO[0]); g = FLO[1] + cl(g) / 255 * (FHI[1] - FLO[1]); b = FLO[2] + cl(b) / 255 * (FHI[2] - FLO[2]);
     }
-    d[i * 4] = finish(r, noise, vig[i]);
-    d[i * 4 + 1] = finish(g, noise, vig[i]);
-    d[i * 4 + 2] = finish(b, noise, vig[i]);
+    const cg = film && !gray; // 컬러 그레인
+    d[i * 4] = finish(r, noise + (cg ? gauss(rng) * 2.5 : 0), vig[i]);
+    d[i * 4 + 1] = finish(g, noise + (cg ? gauss(rng) * 2.5 : 0), vig[i]);
+    d[i * 4 + 2] = finish(b, noise + (cg ? gauss(rng) * 2.5 : 0), vig[i]);
     d[i * 4 + 3] = 255;
   }
   ctx.putImageData(img, 0, 0);

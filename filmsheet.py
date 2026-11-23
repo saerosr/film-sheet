@@ -174,6 +174,8 @@ def extract_frames(video_path: str, n: int, interval: float | None = None):
 
 def _film_grade(img: np.ndarray, grayscale: bool) -> np.ndarray:
     """필름 색감: 채도 낮춤 + 부드러운 S커브 + 그림자 청록/하이라이트 따뜻함 + 할레이션 + 블랙 들뜸. (BGR float)"""
+    # 반투명한 유제 느낌: 아주 약한 확산(소프트 글로우)
+    img = 0.82 * img + 0.18 * cv2.GaussianBlur(img, (0, 0), max(1.5, img.shape[1] / 110))
     lum = img.mean(axis=2, keepdims=True)
     if not grayscale:
         img = lum + (img - lum) * 0.85
@@ -182,9 +184,9 @@ def _film_grade(img: np.ndarray, grayscale: bool) -> np.ndarray:
     if not grayscale:
         w = np.clip(lum / 255, 0, 1)
         sw, hw = (1 - w) ** 2, w ** 2
-        img[..., 2:3] += -4 * sw + 6 * hw  # R
-        img[..., 1:2] += 5 * sw + 2 * hw   # G
-        img[..., 0:1] += 4 * sw - 6 * hw   # B
+        img[..., 2:3] += -6 * sw + 8 * hw  # R
+        img[..., 1:2] += 6 * sw + 3 * hw   # G
+        img[..., 0:1] += 6 * sw - 8 * hw   # B
     bright = np.clip(lum[..., 0] - 185, 0, None)
     halo = (cv2.GaussianBlur(bright, (0, 0), max(1.0, img.shape[1] / 150)) / 70.0)[..., None]
     if grayscale:
@@ -193,7 +195,12 @@ def _film_grade(img: np.ndarray, grayscale: bool) -> np.ndarray:
         img[..., 2:3] += halo[..., :] * 60
         img[..., 1:2] += halo[..., :] * 30
         img[..., 0:1] += halo[..., :] * 8
-    return 18 + np.clip(img, 0, 255) * (232 - 18) / 255
+    if grayscale:
+        lo, hi = 26.0, 233.0
+    else:  # BGR: 블랙은 청록빛 안개, 화이트는 크림색 (필름 베이스가 비치는 느낌)
+        lo = np.array([27, 28, 24], dtype=np.float32)
+        hi = np.array([222, 234, 242], dtype=np.float32)
+    return lo + np.clip(img, 0, 255) / 255 * (hi - lo)
 
 
 def make_frame_image(bgr: np.ndarray, fw: int, fh: int, invert: bool, grayscale: bool,
@@ -226,6 +233,8 @@ def make_frame_image(bgr: np.ndarray, fw: int, fh: int, invert: bool, grayscale:
     # 네거티브: 하이키(밝게) / 포지티브: 자연스러운 톤 + 그레인
     img = 255 * (np.clip(img, 0, 255) / 255) ** (0.9 if film else 0.8)
     img += rng.normal(0, 7.0 if film else 5.5, img.shape[:2])[..., None]
+    if film and not grayscale:  # 컬러 그레인
+        img += rng.normal(0, 2.5, img.shape)
     # 비네팅
     yy, xx = np.mgrid[0:fh, 0:fw]
     d = np.sqrt(((xx - fw / 2) / (fw / 2)) ** 2 + ((yy - fh / 2) / (fh / 2)) ** 2)
