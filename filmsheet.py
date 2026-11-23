@@ -34,9 +34,11 @@ PRESETS = {
 }
 
 BG = (255, 255, 255)  # 바깥 흰 배경
-BASE = (200, 200, 199)  # 필름 베이스 회색
+BASE = (200, 200, 199)  # 필름 베이스 회색 (네거티브)
+BASE_DARK = (30, 30, 30)  # 필름 베이스 (반전 끄면 어두운 테두리)
 HOLE = (236, 236, 235)  # 스프로킷 구멍
 TEXT = (55, 55, 55)
+TEXT_DARK = (225, 225, 225)
 
 # 가로폭(W) 대비 비율 — 샘플 시트 비율을 따름
 FRAME_W = 0.232
@@ -209,13 +211,15 @@ def make_frame_image(bgr: np.ndarray, fw: int, fh: int, invert: bool, grayscale:
 
 
 def build_strip(frames: list[Image.Image], plan: RowPlan, W: int, start_number: int,
-                py: random.Random) -> Image.Image:
+                py: random.Random, dark: bool = False) -> Image.Image:
     """스트립 한 줄(RGBA)을 그린다. 좌표는 스트립 레이어 기준."""
     pitch = PITCH * W
     fw, fh = frames[0].size
     sh = int(STRIP_H * W)
     sw = int(plan.x1 - plan.x0)
-    strip = Image.new("RGBA", (sw, sh), BASE + (255,))
+    base = BASE_DARK if dark else BASE
+    text_color = TEXT_DARK if dark else TEXT
+    strip = Image.new("RGBA", (sw, sh), base + (255,))
     # 베이스에 은은한 노이즈 / 세로 그라데이션
     arr = np.asarray(strip).astype(np.float32)
     arr[..., :3] += np.random.default_rng(py.randint(0, 10**6)).normal(0, 2.0, (sh, sw, 1))
@@ -249,14 +253,14 @@ def build_strip(frames: list[Image.Image], plan: RowPlan, W: int, start_number: 
         strip.paste(fimg.convert("RGBA"), (fx, top_y))
         num = start_number + i
         ty = int(top_y - 0.0125 * W)
-        dr.text((fx + 0.008 * W, ty), str(num), fill=TEXT, font=font)
-        dr.text((fx + 0.133 * W, ty), f"{num}A", fill=TEXT, font=font)
+        dr.text((fx + 0.008 * W, ty), str(num), fill=text_color, font=font)
+        dr.text((fx + 0.133 * W, ty), f"{num}A", fill=text_color, font=font)
         if i % 4 == 0:
-            dr.text((fx + 0.05 * W, top_y + fh + 0.002 * W), "SAFETY FILM", fill=TEXT, font=font)
+            dr.text((fx + 0.05 * W, top_y + fh + 0.002 * W), "SAFETY FILM", fill=text_color, font=font)
     return strip
 
 
-def shadowed(strip: Image.Image, W: int) -> Image.Image:
+def shadowed(strip: Image.Image, W: int, dark: bool = False) -> Image.Image:
     pad = int(0.03 * W)
     w, h = strip.size
     out = Image.new("RGBA", (w + pad * 2, h + pad * 2), (0, 0, 0, 0))
@@ -268,7 +272,7 @@ def shadowed(strip: Image.Image, W: int) -> Image.Image:
     out.alpha_composite(shadow)
     out.alpha_composite(strip, (pad, pad))
     # 가장자리 얇은 밝은 선
-    ImageDraw.Draw(out).rectangle([pad, pad, pad + w - 1, pad + h - 1], outline=(222, 222, 221, 255))
+    ImageDraw.Draw(out).rectangle([pad, pad, pad + w - 1, pad + h - 1], outline=(70, 70, 70, 255) if dark else (222, 222, 221, 255))
     return out
 
 
@@ -297,8 +301,8 @@ def render_sheet(video_path: str, size=(1290, 2796), rows: int = 5, invert: bool
     for plan in plans:
         imgs = [make_frame_image(raw[n + i], fw, fh, invert, grayscale, nrng, py)
                 for i in range(plan.n_frames)]
-        strip = build_strip(imgs, plan, W, n + 1, py)
-        layer = shadowed(strip, W).rotate(plan.angle, resample=Image.BICUBIC, expand=True)
+        strip = build_strip(imgs, plan, W, n + 1, py, dark=not invert)
+        layer = shadowed(strip, W, dark=not invert).rotate(plan.angle, resample=Image.BICUBIC, expand=True)
         cx = plan.x0 + strip.width / 2
         cy = y + strip_h / 2
         _paste_clipped(canvas, layer, int(cx - layer.width / 2), int(cy - layer.height / 2))

@@ -18,6 +18,7 @@ const PRESETS = [
 
 const BG = '#ffffff';
 const BASE = [200, 200, 199];
+const BASE_DARK = [30, 30, 30]; // 반전을 끄면 어두운 필름 테두리
 const HOLE = 'rgb(236,236,235)';
 const TEXT = 'rgb(55,55,55)';
 const FRAME_W = 0.232, FRAME_H = FRAME_W * 2 / 3;
@@ -210,18 +211,19 @@ function makeFrameImage(video, fw, fh, invert, gray, rng) {
 }
 
 // ---------- 스트립 ----------
-function buildStrip(frames, plan, W, startNumber, rng) {
+function buildStrip(frames, plan, W, startNumber, rng, dark) {
   const pitch = PITCH * W;
   const fw = frames[0].width, fh = frames[0].height;
   const sh = Math.round(STRIP_H * W), sw = Math.round(plan.x1 - plan.x0);
   const strip = mkCanvas(sw, sh), ctx = strip.getContext('2d');
+  const baseColor = dark ? BASE_DARK : BASE;
 
   const base = ctx.createImageData(sw, sh), bd = base.data;
   for (let y = 0; y < sh; y++) {
     const g = -6 + 12 * (y / Math.max(1, sh - 1));
     for (let x = 0; x < sw; x++) {
       const o = (y * sw + x) * 4, nz = gauss(rng) * 2;
-      bd[o] = BASE[0] + g + nz; bd[o + 1] = BASE[1] + g + nz; bd[o + 2] = BASE[2] + g + nz; bd[o + 3] = 255;
+      bd[o] = baseColor[0] + g + nz; bd[o + 1] = baseColor[1] + g + nz; bd[o + 2] = baseColor[2] + g + nz; bd[o + 3] = 255;
     }
   }
   ctx.putImageData(base, 0, 0);
@@ -238,7 +240,7 @@ function buildStrip(frames, plan, W, startNumber, rng) {
 
   // 프레임 + 번호
   ctx.font = `${Math.max(10, Math.floor(0.0098 * W))}px Helvetica, Arial, sans-serif`;
-  ctx.textBaseline = 'top'; ctx.fillStyle = TEXT;
+  ctx.textBaseline = 'top'; ctx.fillStyle = dark ? 'rgb(225,225,225)' : TEXT;
   frames.forEach((f, i) => {
     const fx = Math.floor(plan.firstFrameX - plan.x0 + i * pitch);
     ctx.drawImage(f, fx, topY);
@@ -279,7 +281,7 @@ async function renderSheet(video, opt, onProgress) {
       onProgress && onProgress((n + i + 1) / totalFrames);
       await tick();
     }
-    const strip = buildStrip(imgs, plan, W, n + 1, rng);
+    const strip = buildStrip(imgs, plan, W, n + 1, rng, !invert);
     const cx = plan.x0 + strip.width / 2, cy = y + stripH / 2;
     ctx.save();
     ctx.translate(cx, cy);
@@ -287,7 +289,7 @@ async function renderSheet(video, opt, onProgress) {
     ctx.shadowColor = 'rgba(0,0,0,0.37)'; ctx.shadowBlur = W / 110; ctx.shadowOffsetY = 0.004 * W;
     ctx.drawImage(strip, -strip.width / 2, -strip.height / 2);
     ctx.shadowColor = 'transparent'; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
-    ctx.strokeStyle = 'rgb(222,222,221)'; ctx.lineWidth = 1;
+    ctx.strokeStyle = invert ? 'rgb(222,222,221)' : 'rgb(70,70,70)'; ctx.lineWidth = 1;
     ctx.strokeRect(-strip.width / 2 + 0.5, -strip.height / 2 + 0.5, strip.width - 1, strip.height - 1);
     ctx.restore();
     n += plan.n; y += stripH + gap;
