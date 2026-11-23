@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Film Sheet — 영상으로 필름 배경화면 만들기</title>
+<style>
+  body{font-family:-apple-system,Helvetica,Arial,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;background:#fff;color:#222;margin:0;padding:40px 20px}
+  main{max-width:560px;margin:auto}
+  h1{font-weight:500;letter-spacing:.02em;margin-bottom:6px}
+  .sub{color:#777;font-size:14px;margin:0 0 22px}
+  form{display:grid;gap:14px;background:#fafafa;padding:22px;border:1px solid #e4e4e0;border-radius:12px}
+  label{display:grid;gap:6px;font-size:14px;color:#555}
+  input,select,button{font:inherit;padding:9px;border:1px solid #ccc;border-radius:8px;background:#fff}
+  .row{display:flex;gap:18px;align-items:center;font-size:14px}
+  .row label{display:flex;align-items:center;gap:6px}.row input{padding:0}
+  button{background:#222;color:#fff;border:0;cursor:pointer;padding:12px}
+  button:disabled{opacity:.5;cursor:default}
+  #status{text-align:center;color:#666;font-size:14px;margin-top:14px;min-height:1em}
+  .err{color:#b00020;margin:14px 0;font-size:14px}
+  #result{text-align:center}
+  #preview{width:100%;max-width:360px;display:block;margin:20px auto 10px;border:1px solid #ddd}
+  #info{font-size:13px;color:#666}
+  a.dl{display:inline-block;margin-top:8px}
+  .note{font-size:12px;color:#999;text-align:center;margin-top:28px}
+</style>
+</head>
+<body>
+<main>
+  <h1>🎞 Film Sheet</h1>
+  <p class="sub">영상을 넣으면 필름 컨택트 시트 배경화면이 만들어져요.</p>
+  <form id="form">
+    <label>영상 파일<input id="video" type="file" accept="video/*" required></label>
+    <label>기기 사이즈<select id="preset"></select></label>
+    <label>필름 줄 수 (1~6)<input id="rows" type="number" value="5" min="1" max="6"></label>
+    <label>프레임 간격(초) — 비우면 영상 길이에 맞춰 자동<input id="interval" type="number" step="0.1" min="0.1" placeholder="자동"></label>
+    <label>랜덤 시드 (배치/먼지 모양)<input id="seed" type="number" value="7"></label>
+    <div class="row">
+      <label><input id="invert" type="checkbox" checked> 네거티브(반전)</label>
+      <label><input id="gray" type="checkbox" checked> 흑백</label>
+    </div>
+    <button id="go" type="submit">시트 만들기</button>
+  </form>
+  <div id="status"></div>
+  <p id="err" class="err"></p>
+  <div id="result" hidden>
+    <img id="preview" alt="film sheet">
+    <div id="info"></div>
+    <a id="download" class="dl" download="film_sheet.png">PNG 다운로드</a>
+  </div>
+  <p class="note">영상은 서버로 전송되지 않고, 이 브라우저 안에서만 처리돼요.</p>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
